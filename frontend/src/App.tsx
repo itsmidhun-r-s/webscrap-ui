@@ -563,8 +563,7 @@ function App() {
                 await saveExtractedDataToBackend(backendId, unique);
               }
             } catch (dbErr: any) {
-              console.error('Error saving data to backend database:', dbErr);
-              alert(`Warning: Extracted in browser, but database sync returned error: ${dbErr.message || dbErr}`);
+              console.warn('Database sync offline/unavailable (running in browser local mode):', dbErr?.message || dbErr);
             }
 
             const newFile: UploadedFileInfo = {
