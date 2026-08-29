@@ -248,7 +248,8 @@ function App() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionComplete, setExtractionComplete] = useState(false);
   const [extractedData, setExtractedData] = useState<any[]>([]);
-  const [stats, setStats] = useState({ total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+  const DEFAULT_STATS = { total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 };
+  const [stats, setStats] = useState(DEFAULT_STATS);
   const [searchTerm, setSearchTerm] = useState('');
   const [providerFilter, setProviderFilter] = useState('all');
   const [cityFilter, setCityFilter] = useState('');
@@ -1188,10 +1189,10 @@ function App() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                  <StatCardDark label="Total rows" value={stats.total} icon={<BarChart3 className="w-4 h-4 text-blue-400" />} color="blue" />
-                  <StatCardDark label="Names found" value={stats.names} icon={<User className="w-4 h-4 text-indigo-400" />} color="indigo" />
-                  <StatCardDark label="Phones found" value={stats.phones} icon={<Phone className="w-4 h-4 text-emerald-400" />} color="emerald" />
-                  <StatCardDark label="Valid emails" value={stats.validEmails} icon={<Mail className="w-4 h-4 text-rose-400" />} color="rose" />
+                  <StatCardDark label="Total rows" value={stats?.total ?? 0} icon={<BarChart3 className="w-4 h-4 text-blue-400" />} color="blue" />
+                  <StatCardDark label="Names found" value={stats?.names ?? 0} icon={<User className="w-4 h-4 text-indigo-400" />} color="indigo" />
+                  <StatCardDark label="Phones found" value={stats?.phones ?? 0} icon={<Phone className="w-4 h-4 text-emerald-400" />} color="emerald" />
+                  <StatCardDark label="Valid emails" value={stats?.validEmails ?? 0} icon={<Mail className="w-4 h-4 text-rose-400" />} color="rose" />
                   <StatCardDark label="Cities found" value={extractedData.filter(r => r.city && r.city.trim() !== '').length} icon={<MapPin className="w-4 h-4 text-purple-400" />} color="purple" />
                   <StatCardDark label="States found" value={extractedData.filter(r => r.state && r.state.trim() !== '').length} icon={<Flag className="w-4 h-4 text-amber-400" />} color="amber" />
                 </div>
@@ -1337,9 +1338,9 @@ function App() {
             {/* Summary Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <SummaryCardDark label="Total Records" value={extractedData.length} icon={<Database className="w-5 h-5 text-blue-400" />} color="blue" />
-              <SummaryCardDark label="Names Found" value={stats.names || extractedData.length} icon={<User className="w-5 h-5 text-indigo-400" />} color="indigo" />
-              <SummaryCardDark label="Phone Numbers" value={stats.phones || extractedData.length} icon={<Phone className="w-5 h-5 text-emerald-400" />} color="emerald" />
-              <SummaryCardDark label="Valid Emails" value={stats.validEmails || extractedData.length} icon={<Mail className="w-5 h-5 text-rose-400" />} color="rose" />
+              <SummaryCardDark label="Names Found" value={stats?.names ?? extractedData.length} icon={<User className="w-5 h-5 text-indigo-400" />} color="indigo" />
+              <SummaryCardDark label="Phone Numbers" value={stats?.phones ?? extractedData.length} icon={<Phone className="w-5 h-5 text-emerald-400" />} color="emerald" />
+              <SummaryCardDark label="Valid Emails" value={stats?.validEmails ?? extractedData.length} icon={<Mail className="w-5 h-5 text-rose-400" />} color="rose" />
             </div>
 
             {/* Enhanced Toolbar with City and State Dropdowns */}
