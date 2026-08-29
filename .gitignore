@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Production Build output
+dist/
+frontend/dist/
+dist-ssr/
+
+# Backend uploaded files & logs (preserve directory with .gitkeep)
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/uploads/.htaccess
+backend/logs/*
+
+# Zip files
+*.zip
+
+# Local Environment & IDE files
+.vscode/
+.idea/
+.DS_Store
+*.log
