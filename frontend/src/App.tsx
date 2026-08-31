@@ -3,11 +3,10 @@ import * as LucideIcons from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { uploadFileToBackend, saveExtractedDataToBackend, fetchFilesFromBackend, deleteFileFromBackend } from './services/api';
 
-
 const {
   FileSpreadsheet, CheckCircle, XCircle, Loader2,
   Search, Copy, Trash2, Download, FileDown, ArrowLeft, ArrowRight,
-  Database, User, Phone, Mail, Sparkles,
+  Database, User, Phone, Mail,
   Shield, ChevronRight, Upload,
   BarChart3, Filter, Rocket, BadgeCheck,
   Brain, Moon, Sun, FolderOpen, History, Layers, Merge,
@@ -118,7 +117,6 @@ const normalizeRecords = (records: any[], defaultSourceFile: string = ''): any[]
   });
 };
 
-// Function to extract data from Excel with city and state/country code
 const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any[] => {
   const extracted: any[] = [];
   const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
@@ -133,7 +131,6 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
     let city = '';
     let state = '';
     
-    // Try to find email
     for (const value of rowValues) {
       if (typeof value === 'string') {
         const emailMatch = value.match(emailRegex);
@@ -144,7 +141,6 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
       }
     }
     
-    // Try to find name
     for (const value of rowValues) {
       if (typeof value === 'string' && value.length > 2) {
         if (/^[a-zA-Z\s\.]{2,}$/.test(value) && !value.includes('@') && !/\d/.test(value)) {
@@ -154,7 +150,6 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
       }
     }
     
-    // Try to find phone
     for (const value of rowValues) {
       if (typeof value === 'string') {
         const phoneMatch = value.match(phoneRegex);
@@ -165,19 +160,16 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
       }
     }
 
-    // Try to find city and state from column names or values
     for (let i = 0; i < rowKeys.length; i++) {
       const key = rowKeys[i].toLowerCase();
       const value = rowValues[i];
       
       if (typeof value === 'string' && value.trim() !== '') {
-        // Check for state/country code columns
         if (key.includes('state') || key.includes('province') || key.includes('region') || 
             key.includes('country') || key === 'st' || key === 'state_code') {
           state = value.trim();
         }
         
-        // Check for city columns
         if (key.includes('city') || key.includes('town') || key.includes('municipality') || 
             key === 'city_name' || key === 'locality') {
           city = value.trim();
@@ -185,7 +177,6 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
       }
     }
 
-    // If city/state not found in columns, try to detect from full address fields
     if (!city || !state) {
       for (const value of rowValues) {
         if (typeof value === 'string' && value.includes(',')) {
@@ -219,7 +210,6 @@ const extractDataFromExcel = (jsonData: any[], sourceFilename: string = ''): any
   return extracted;
 };
 
-// Interface for uploaded file
 interface UploadedFileInfo {
   id: string;
   filename: string;
@@ -239,12 +229,19 @@ interface UploadedFileInfo {
   };
 }
 
+interface PendingFile {
+  file: File;
+  fileName: string;
+  fileSize: string;
+  progress: number;
+  status: 'pending' | 'extracting' | 'complete' | 'error';
+  extractedData?: any[];
+  stats?: any;
+}
+
 function App() {
   const [activeView, setActiveView] = useState('dashboard');
-  const [file, setFile] = useState<File | null>(null);
-  const [fileName, setFileName] = useState('');
-  const [fileSize, setFileSize] = useState('');
-  const [extractionProgress, setExtractionProgress] = useState(0);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionComplete, setExtractionComplete] = useState(false);
   const [extractedData, setExtractedData] = useState<any[]>([]);
@@ -264,7 +261,6 @@ function App() {
   const [isMerging, setIsMerging] = useState(false);
   const pageSize = 5;
 
-  // Load saved files from backend MySQL database (with localStorage fallback)
   const loadSavedFiles = async () => {
     try {
       const backendRes = await fetchFilesFromBackend();
@@ -306,7 +302,6 @@ function App() {
     }
   };
 
-  // Load specific file data
   const loadFileData = (fileId: string) => {
     const file = uploadedFiles.find(f => f.id === fileId);
     if (file) {
@@ -316,10 +311,15 @@ function App() {
       setExtractionComplete(true);
       setActiveView('results');
       setSelectedFileId(fileId);
+      // Reset filters when switching files
+      setProviderFilter('all');
+      setCityFilter('');
+      setStateFilter('all');
+      setSearchTerm('');
+      setCurrentPage(1);
     }
   };
 
-  // Save files to localStorage
   const saveFilesToStorage = (files: UploadedFileInfo[]) => {
     try {
       localStorage.setItem('uploadedFiles', JSON.stringify(files));
@@ -328,19 +328,17 @@ function App() {
     }
   };
 
-  // Load saved data on page load
   useEffect(() => {
     loadSavedFiles();
   }, []);
 
-  // Save to localStorage when uploadedFiles changes
   useEffect(() => {
     if (uploadedFiles.length > 0) {
       saveFilesToStorage(uploadedFiles);
     }
   }, [uploadedFiles]);
 
-  // Get domain statistics
+  // Compute domain statistics from extracted data
   const domainStats = useMemo(() => {
     const stats: { [key: string]: number } = {};
     extractedData.forEach(row => {
@@ -350,7 +348,7 @@ function App() {
     return stats;
   }, [extractedData]);
 
-  // Get city statistics
+  // Compute city statistics
   const cityStats = useMemo(() => {
     const stats: { [key: string]: number } = {};
     extractedData.forEach(row => {
@@ -360,7 +358,7 @@ function App() {
     return stats;
   }, [extractedData]);
 
-  // Get state statistics
+  // Compute state statistics
   const stateStats = useMemo(() => {
     const stats: { [key: string]: number } = {};
     extractedData.forEach(row => {
@@ -370,7 +368,7 @@ function App() {
     return stats;
   }, [extractedData]);
 
-  // Unique Cities list
+  // Unique cities
   const uniqueCities = useMemo(() => {
     const cities = new Set<string>();
     extractedData.forEach(row => {
@@ -379,7 +377,7 @@ function App() {
     return Array.from(cities).sort();
   }, [extractedData]);
 
-  // Unique State / Country codes list (e.g. FL, MD, NY, CA, TX)
+  // Unique states
   const uniqueStates = useMemo(() => {
     const states = new Set<string>();
     extractedData.forEach(row => {
@@ -388,45 +386,57 @@ function App() {
     return Array.from(states).sort();
   }, [extractedData]);
 
-  // Filter and sort data
+  // FIXED: Filter and sort data
   const filteredData = useMemo(() => {
+    if (!extractedData || extractedData.length === 0) return [];
+    
     let data = [...extractedData];
     
+    // Search filter - check all fields
     if (searchTerm && searchTerm.trim() !== '') {
       const s = searchTerm.toLowerCase().trim();
-      data = data.filter(row =>
-        (row.name && row.name.toLowerCase().includes(s)) ||
-        (row.phone && row.phone.toLowerCase().includes(s)) ||
-        (row.email && row.email.toLowerCase().includes(s)) ||
-        (row.city && row.city.toLowerCase().includes(s)) ||
-        (row.state && row.state.toLowerCase().includes(s))
-      );
+      data = data.filter(row => {
+        const name = (row.name || '').toLowerCase();
+        const phone = (row.phone || '').toLowerCase();
+        const email = (row.email || '').toLowerCase();
+        const city = (row.city || '').toLowerCase();
+        const state = (row.state || '').toLowerCase();
+        const domain = (row.domain || '').toLowerCase();
+        return name.includes(s) || phone.includes(s) || email.includes(s) || 
+               city.includes(s) || state.includes(s) || domain.includes(s);
+      });
     }
     
+    // Provider filter - exact match
     if (providerFilter !== 'all') {
       data = data.filter(row => {
-        const domain = row.domain || '';
-        return domain === providerFilter;
+        const domain = (row.domain || '').toLowerCase();
+        return domain === providerFilter.toLowerCase();
       });
     }
 
+    // City filter - partial match
     if (cityFilter && cityFilter.trim() !== '') {
       const c = cityFilter.toLowerCase().trim();
-      data = data.filter(row => 
-        row.city && row.city.toLowerCase().includes(c)
-      );
+      data = data.filter(row => {
+        const city = (row.city || '').toLowerCase();
+        return city.includes(c);
+      });
     }
 
+    // State filter - exact match
     if (stateFilter !== 'all') {
-      data = data.filter(row => 
-        row.state && row.state.toUpperCase() === stateFilter.toUpperCase()
-      );
+      data = data.filter(row => {
+        const state = (row.state || '').toUpperCase();
+        return state === stateFilter.toUpperCase();
+      });
     }
     
+    // Sort
     if (sortConfig.key) {
       data = [...data].sort((a, b) => {
-        const aVal = a[sortConfig.key as keyof typeof a]?.toLowerCase() || '';
-        const bVal = b[sortConfig.key as keyof typeof b]?.toLowerCase() || '';
+        const aVal = (a[sortConfig.key as keyof typeof a] || '').toString().toLowerCase();
+        const bVal = (b[sortConfig.key as keyof typeof b] || '').toString().toLowerCase();
         if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
         if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
         return 0;
@@ -443,19 +453,45 @@ function App() {
     return filteredData.slice(start, start + pageSize);
   }, [filteredData, currentPage, pageSize]);
 
-  // Reset to page 1 when filter changes
+  // Reset to page 1 when any filter changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, providerFilter, cityFilter, stateFilter]);
 
+  // Check for duplicate files
+  const getDuplicateFiles = (files: File[]): File[] => {
+    const existingFilenames = new Set(uploadedFiles.map(f => f.filename.toLowerCase()));
+    const pendingFilenames = new Set(pendingFiles.map(f => f.fileName.toLowerCase()));
+    return files.filter(file => {
+      const name = file.name.toLowerCase();
+      return existingFilenames.has(name) || pendingFilenames.has(name);
+    });
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setFile(f);
-      setFileName(f.name);
-      setFileSize((f.size / 1024).toFixed(1) + ' KB');
-      setExtractionComplete(false);
-      setExtractedData([]);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const fileArray = Array.from(files);
+      
+      const duplicates = getDuplicateFiles(fileArray);
+      if (duplicates.length > 0) {
+        const duplicateNames = duplicates.map(f => f.name).join(', ');
+        alert(`The following files are already uploaded or pending:\n${duplicateNames}\n\nPlease remove duplicates and try again.`);
+        const input = document.getElementById('fileInput') as HTMLInputElement;
+        if (input) input.value = '';
+        return;
+      }
+      
+      const newPendingFiles: PendingFile[] = fileArray.map(file => ({
+        file: file,
+        fileName: file.name,
+        fileSize: (file.size / 1024).toFixed(1) + ' KB',
+        progress: 0,
+        status: 'pending'
+      }));
+      
+      setPendingFiles(prev => [...prev, ...newPendingFiles]);
+      extractAllFiles([...pendingFiles, ...newPendingFiles]);
     }
   };
 
@@ -472,42 +508,65 @@ function App() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f && (f.name.endsWith('.xlsx') || f.name.endsWith('.xls'))) {
-      setFile(f);
-      setFileName(f.name);
-      setFileSize((f.size / 1024).toFixed(1) + ' KB');
-      setExtractionComplete(false);
-      setExtractedData([]);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const fileArray = Array.from(files).filter(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls'));
+      
+      if (fileArray.length === 0) {
+        alert('Please drop only .xlsx or .xls files.');
+        return;
+      }
+      
+      const duplicates = getDuplicateFiles(fileArray);
+      if (duplicates.length > 0) {
+        const duplicateNames = duplicates.map(f => f.name).join(', ');
+        alert(`The following files are already uploaded or pending:\n${duplicateNames}\n\nPlease remove duplicates and try again.`);
+        return;
+      }
+      
+      const newPendingFiles: PendingFile[] = fileArray.map(file => ({
+        file: file,
+        fileName: file.name,
+        fileSize: (file.size / 1024).toFixed(1) + ' KB',
+        progress: 0,
+        status: 'pending'
+      }));
+      
+      setPendingFiles(prev => [...prev, ...newPendingFiles]);
+      extractAllFiles([...pendingFiles, ...newPendingFiles]);
     }
   };
 
-  const removeFile = () => {
-    setFile(null);
-    setFileName('');
-    setFileSize('');
-    setExtractionComplete(false);
-    setExtractedData([]);
-    setExtractionProgress(0);
-    const input = document.getElementById('fileInput') as HTMLInputElement;
-    if (input) input.value = '';
+  const removePendingFile = (index: number) => {
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const runExtraction = () => {
-    if (!file) {
-      alert('Please upload an Excel file first.');
-      return;
-    }
+  const extractAllFiles = async (filesToExtract: PendingFile[]) => {
+    if (filesToExtract.length === 0) return;
     
     setIsExtracting(true);
-    setExtractionProgress(0);
-    setExtractionComplete(false);
     
-    const reader = new FileReader();
-    reader.onload = (e) => {
+    for (let i = 0; i < filesToExtract.length; i++) {
+      const pendingFile = filesToExtract[i];
+      if (pendingFile.status === 'complete' || pendingFile.status === 'extracting') continue;
+      
+      setPendingFiles(prev => 
+        prev.map((f, idx) => 
+          idx === i ? { ...f, status: 'extracting', progress: 10 } : f
+        )
+      );
+      
       try {
-        const data = e.target?.result;
-        const workbook = XLSX.read(data, { 
+        const file = pendingFile.file;
+        const reader = new FileReader();
+        
+        const result = await new Promise<ArrayBuffer>((resolve, reject) => {
+          reader.onload = (e) => resolve(e.target?.result as ArrayBuffer);
+          reader.onerror = reject;
+          reader.readAsArrayBuffer(file);
+        });
+        
+        const workbook = XLSX.read(result, { 
           type: 'array',
           cellDates: true,
           dateNF: 'yyyy-mm-dd'
@@ -519,101 +578,113 @@ function App() {
         });
         
         if (jsonData.length === 0) {
-          alert('The Excel file appears to be empty. Please check the file.');
-          setIsExtracting(false);
-          return;
+          throw new Error('The Excel file appears to be empty.');
         }
         
         const totalRows = jsonData.length;
-        let progress = 0;
-        const interval = setInterval(async () => {
-          progress += Math.floor(Math.random() * 10) + 15;
-          if (progress >= 90) {
-            progress = 90;
-            clearInterval(interval);
-            
-            const raw = extractDataFromExcel(jsonData);
-            raw.forEach(r => r.sourceFile = file.name);
-            
-            const valid = raw.filter(row => isValidEmail(row.email));
-            const seen = new Set();
-            const unique = valid.filter(row => {
-              const key = row.email.toLowerCase();
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            });
-            
-            const newStats = {
-              total: raw.length,
-              names: unique.filter(r => r.name && r.name.trim() !== '' && r.name !== 'Unknown').length,
-              phones: unique.filter(r => r.phone && r.phone.trim() !== '' && r.phone !== 'N/A').length,
-              validEmails: unique.length,
-              skipped: raw.length - unique.length,
-              duplicates: raw.length - unique.length
-            };
-
-            let backendId = Date.now().toString();
-
-            try {
-              // Upload physical file to PHP backend
-              const uploadRes = await uploadFileToBackend(file);
-              if (uploadRes && uploadRes.success && uploadRes.file) {
-                backendId = uploadRes.file.id.toString();
-                // Store extracted contacts into MySQL database
-                await saveExtractedDataToBackend(backendId, unique);
-              }
-            } catch (dbErr: any) {
-              console.warn('Database sync offline/unavailable (running in browser local mode):', dbErr?.message || dbErr);
-            }
-
-            const newFile: UploadedFileInfo = {
-              id: backendId,
-              filename: file.name,
-              fileSize: (file.size / 1024).toFixed(1) + ' KB',
-              uploadedAt: new Date().toLocaleString(),
-              recordCount: unique.length,
-              totalRows: totalRows,
-              data: unique,
-              isMerged: false,
-              stats: newStats
-            };
-            
-            const updatedFiles = [newFile, ...uploadedFiles.filter(f => f.id !== backendId)];
-            setUploadedFiles(updatedFiles);
-            setSelectedFileId(newFile.id);
-            
-            setExtractedData(unique);
-            setStats(newStats);
-            setExtractionComplete(true);
-            setIsExtracting(false);
-            setExtractionProgress(100);
-            
-            saveFilesToStorage(updatedFiles);
+        
+        for (let progress = 10; progress <= 90; progress += 10) {
+          setPendingFiles(prev => 
+            prev.map((f, idx) => 
+              idx === i ? { ...f, progress: Math.min(progress, 90) } : f
+            )
+          );
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        const raw = extractDataFromExcel(jsonData);
+        raw.forEach(r => r.sourceFile = file.name);
+        
+        const valid = raw.filter(row => isValidEmail(row.email));
+        const seen = new Set();
+        const unique = valid.filter(row => {
+          const key = row.email.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        
+        const newStats = {
+          total: raw.length,
+          names: unique.filter(r => r.name && r.name.trim() !== '' && r.name !== 'Unknown').length,
+          phones: unique.filter(r => r.phone && r.phone.trim() !== '' && r.phone !== 'N/A').length,
+          validEmails: unique.length,
+          skipped: raw.length - unique.length,
+          duplicates: raw.length - unique.length
+        };
+        
+        let backendId = Date.now().toString() + '_' + i;
+        
+        try {
+          const uploadRes = await uploadFileToBackend(file);
+          if (uploadRes && uploadRes.success && uploadRes.file) {
+            backendId = uploadRes.file.id.toString();
+            await saveExtractedDataToBackend(backendId, unique);
           }
-          setExtractionProgress(progress);
-        }, 150);
+        } catch (dbErr: any) {
+          console.warn('Database sync offline/unavailable:', dbErr?.message || dbErr);
+        }
+        
+        const newFile: UploadedFileInfo = {
+          id: backendId,
+          filename: file.name,
+          fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          uploadedAt: new Date().toLocaleString(),
+          recordCount: unique.length,
+          totalRows: totalRows,
+          data: unique,
+          isMerged: false,
+          stats: newStats
+        };
+        
+        setPendingFiles(prev => 
+          prev.map((f, idx) => 
+            idx === i ? { 
+              ...f, 
+              status: 'complete', 
+              progress: 100,
+              extractedData: unique,
+              stats: newStats
+            } : f
+          )
+        );
+        
+        setUploadedFiles(prev => [newFile, ...prev.filter(f => f.id !== backendId)]);
+        setSelectedFileId(newFile.id);
+        
+        if (i === 0) {
+          setExtractedData(unique);
+          setStats(newStats);
+          setExtractionComplete(true);
+          // Reset filters when new data is loaded
+          setProviderFilter('all');
+          setCityFilter('');
+          setStateFilter('all');
+          setSearchTerm('');
+        }
         
       } catch (error) {
-        console.error('Error reading Excel file:', error);
-        setIsExtracting(false);
-        alert('Error reading the Excel file. Please make sure it\'s a valid .xlsx or .xls file.');
-        setExtractionProgress(0);
+        console.error('Error extracting file:', error);
+        setPendingFiles(prev => 
+          prev.map((f, idx) => 
+            idx === i ? { ...f, status: 'error', progress: 0 } : f
+          )
+        );
       }
-    };
+    }
     
-    reader.onerror = () => {
-      setIsExtracting(false);
-      alert('Error reading the file. Please try again.');
-    };
-    
-    reader.readAsArrayBuffer(file);
+    setIsExtracting(false);
   };
 
   const goToDashboard = () => {
     setActiveView('dashboard');
     setCurrentPage(1);
     setSelectedRows([]);
+    // Reset filters when going to dashboard
+    setProviderFilter('all');
+    setCityFilter('');
+    setStateFilter('all');
+    setSearchTerm('');
   };
 
   const toggleRowSelection = (email: string) => {
@@ -685,7 +756,6 @@ function App() {
     XLSX.writeFile(wb, filename || `extracted_data_${Date.now()}.xlsx`);
   };
 
-  // Merge all files function
   const mergeAllFiles = () => {
     const originalFiles = uploadedFiles.filter(f => !f.isMerged);
     
@@ -744,6 +814,11 @@ function App() {
       setStats(mergedStats);
       setExtractionComplete(true);
       setActiveView('results');
+      // Reset filters
+      setProviderFilter('all');
+      setCityFilter('');
+      setStateFilter('all');
+      setSearchTerm('');
 
       setIsMerging(false);
       alert(`✅ Successfully merged ${originalFiles.length} files!\nTotal records: ${mergedData.length}\nDuplicates removed: ${allData.length - mergedData.length}`);
@@ -856,6 +931,30 @@ function App() {
     return uploadedFiles.filter(f => !f.isMerged).length;
   };
 
+  // Filter click handlers
+  const handleProviderClick = (provider: string) => {
+    setProviderFilter(providerFilter === provider ? 'all' : provider);
+    setCurrentPage(1);
+  };
+
+  const handleCityClick = (city: string) => {
+    setCityFilter(cityFilter === city ? '' : city);
+    setCurrentPage(1);
+  };
+
+  const handleStateClick = (state: string) => {
+    setStateFilter(stateFilter === state ? 'all' : state);
+    setCurrentPage(1);
+  };
+
+  const handleResetFilters = () => {
+    setSearchTerm('');
+    setProviderFilter('all');
+    setCityFilter('');
+    setStateFilter('all');
+    setCurrentPage(1);
+  };
+
   const bgClass = isDarkMode ? 'bg-[#0a0e1a]' : 'bg-slate-50';
   const textClass = isDarkMode ? 'text-white' : 'text-slate-800';
   const cardClass = isDarkMode ? 'bg-[#111827]/80 backdrop-blur-2xl border-[#1e293b]/50 shadow-2xl shadow-blue-500/5' : 'bg-white/80 backdrop-blur-2xl border-slate-200/30 shadow-xl shadow-slate-200/30';
@@ -947,13 +1046,13 @@ function App() {
                   <div 
                     className={`relative border-3 border-dashed rounded-2xl p-12 text-center transition-all duration-300 ${
                       isDragging ? 'border-blue-500 bg-blue-500/10 scale-[1.02] shadow-xl shadow-blue-500/20' :
-                      file ? 'border-emerald-400 bg-emerald-500/10' : 'border-[#1e293b] bg-[#1a2332]/50 hover:border-blue-400 hover:bg-blue-500/5'
+                      pendingFiles.length > 0 ? 'border-emerald-400 bg-emerald-500/10' : 'border-[#1e293b] bg-[#1a2332]/50 hover:border-blue-400 hover:bg-blue-500/5'
                     }`}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
                   >
-                    {!file ? (
+                    {pendingFiles.length === 0 ? (
                       <>
                         <div className="flex justify-center mb-6">
                           <div className="relative">
@@ -963,77 +1062,117 @@ function App() {
                             </div>
                           </div>
                         </div>
-                        <p className="text-xl font-semibold text-white">Drop your Excel file here</p>
-                        <p className="text-sm text-slate-400 mt-2">or click to browse</p>
-                        <input id="fileInput" type="file" accept=".xlsx,.xls" onChange={handleFileChange} className="hidden" />
+                        <p className="text-xl font-semibold text-white">Drop your Excel files here</p>
+                        <p className="text-sm text-slate-400 mt-2">or click to browse (multiple files allowed)</p>
+                        <input id="fileInput" type="file" accept=".xlsx,.xls" onChange={handleFileChange} multiple className="hidden" />
                         <button 
                           onClick={() => document.getElementById('fileInput')?.click()} 
                           className="mt-8 inline-flex items-center gap-3 px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-semibold rounded-2xl transition-all shadow-xl shadow-blue-500/40 hover:shadow-2xl hover:scale-[1.05] active:scale-95"
                         >
-                          <FileSpreadsheet className="w-5 h-5" /> Browse Excel File
+                          <FileSpreadsheet className="w-5 h-5" /> Browse Excel Files
                         </button>
                         <div className="mt-4 flex items-center justify-center gap-4 text-xs text-slate-400">
                           <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-emerald-400" /> .xlsx</span>
                           <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-emerald-400" /> .xls</span>
                           <span className="flex items-center gap-1"><Shield className="w-3 h-3 text-blue-400" /> Secure</span>
+                          <span className="flex items-center gap-1"><Layers className="w-3 h-3 text-purple-400" /> Multi-file</span>
                         </div>
                       </>
                     ) : (
-                      <div className="flex flex-col items-center animate-in fade-in slide-in-from-top-2 duration-500">
-                        <div className="relative">
-                          <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 to-blue-500 rounded-full blur-2xl opacity-20 animate-pulse" />
-                          <div className="relative p-4 bg-gradient-to-br from-emerald-500/10 to-blue-500/10 rounded-full">
-                            <FileSpreadsheet className="w-14 h-14 text-emerald-400" />
+                      <div className="w-full">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <FileSpreadsheet className="w-6 h-6 text-emerald-400" />
+                            <span className="text-white font-semibold">{pendingFiles.length} file(s) uploading</span>
                           </div>
+                          <button 
+                            onClick={() => setPendingFiles([])} 
+                            className="text-sm text-red-400 hover:text-red-300 flex items-center gap-1.5 transition-all hover:scale-105 font-medium"
+                          >
+                            <XCircle className="w-4 h-4" /> Clear All
+                          </button>
                         </div>
-                        <p className="font-semibold text-white text-lg mt-4">{fileName}</p>
-                        <p className="text-sm text-slate-400">{fileSize}</p>
-                        <button 
-                          onClick={removeFile} 
-                          className="mt-4 text-sm text-red-400 hover:text-red-300 flex items-center gap-1.5 transition-all hover:scale-105 font-medium"
-                        >
-                          <XCircle className="w-4 h-4" /> Remove file
-                        </button>
+                        <div className="space-y-2 max-h-60 overflow-y-auto">
+                          {pendingFiles.map((pendingFile, index) => (
+                            <div key={index} className="bg-[#1a2332]/50 rounded-lg p-3 border border-[#1e293b]/50">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3 flex-1">
+                                  <FileSpreadsheet className="w-4 h-4 text-blue-400" />
+                                  <span className="text-sm text-white truncate">{pendingFile.fileName}</span>
+                                  <span className="text-xs text-slate-400">{pendingFile.fileSize}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {pendingFile.status === 'pending' && (
+                                    <span className="text-xs text-yellow-400">Pending</span>
+                                  )}
+                                  {pendingFile.status === 'extracting' && (
+                                    <div className="flex items-center gap-2">
+                                      <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                                      <span className="text-xs text-blue-400">{pendingFile.progress}%</span>
+                                    </div>
+                                  )}
+                                  {pendingFile.status === 'complete' && (
+                                    <span className="text-xs text-emerald-400">✓ Complete</span>
+                                  )}
+                                  {pendingFile.status === 'error' && (
+                                    <span className="text-xs text-red-400">✗ Error</span>
+                                  )}
+                                  {pendingFile.status === 'pending' && (
+                                    <button 
+                                      onClick={() => removePendingFile(index)} 
+                                      className="text-red-400 hover:text-red-300"
+                                    >
+                                      <XCircle className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              {pendingFile.status === 'extracting' && (
+                                <div className="mt-2 h-1.5 bg-[#1e293b] rounded-full overflow-hidden">
+                                  <div 
+                                    className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-300"
+                                    style={{ width: `${pendingFile.progress}%` }}
+                                  />
+                                </div>
+                              )}
+                              {pendingFile.status === 'complete' && pendingFile.stats && (
+                                <div className="mt-1 text-xs text-slate-400">
+                                  {pendingFile.stats.validEmails} emails extracted
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        {isExtracting && (
+                          <div className="mt-3 flex items-center justify-center gap-2 text-sm text-blue-400">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Extracting files...
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 </div>
                 <div className="flex flex-col items-center lg:items-end gap-4 w-full lg:w-auto min-w-[220px]">
                   <button
-                    onClick={runExtraction}
-                    disabled={!file || isExtracting}
+                    onClick={() => document.getElementById('fileInput')?.click()}
+                    disabled={isExtracting}
                     className={`w-full px-12 py-4 rounded-2xl font-bold text-white transition-all flex items-center justify-center gap-3 ${
-                      !file || isExtracting 
+                      isExtracting 
                         ? 'bg-[#1e293b] cursor-not-allowed text-slate-400' 
                         : 'bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 shadow-2xl shadow-purple-500/40 hover:shadow-3xl hover:scale-[1.05] active:scale-95'
                     }`}
                   >
-                    {isExtracting ? (
-                      <>
-                        <Loader2 className="animate-spin w-5 h-5" />
-                        Extracting...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-5 h-5" />
-                        Extract Data
-                      </>
-                    )}
+                    <Layers className="w-5 h-5" />
+                    Add More Files
                   </button>
                   {isExtracting && (
                     <div className="w-full max-w-xs animate-in fade-in slide-in-from-top-2 duration-300">
                       <div className="flex justify-between text-sm font-semibold text-slate-300 mb-2">
                         <span className="flex items-center gap-2">
                           <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                          Processing...
+                          Processing files...
                         </span>
-                        <span className="text-transparent bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text">{extractionProgress}%</span>
-                      </div>
-                      <div className="h-2.5 bg-[#1e293b] rounded-full overflow-hidden shadow-inner">
-                        <div 
-                          className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-full transition-all duration-300"
-                          style={{ width: `${extractionProgress}%` }}
-                        />
                       </div>
                     </div>
                   )}
@@ -1245,7 +1384,7 @@ function App() {
               </div>
             </div>
 
-            {/* Domain & Location Statistics */}
+            {/* Domain & Location Statistics - Clickable Filters */}
             {extractedData.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className={`${cardClass} rounded-2xl p-4 border border-[#1e293b]/30`}>
@@ -1257,7 +1396,7 @@ function App() {
                     {Object.entries(domainStats).map(([domain, count]) => (
                       <button 
                         key={domain}
-                        onClick={() => setProviderFilter(providerFilter === domain ? 'all' : domain)}
+                        onClick={() => handleProviderClick(domain)}
                         className={`px-3 py-1 rounded-full text-xs font-medium transition-all hover:scale-105 ${
                           providerFilter === domain ? 'ring-2 ring-blue-400 bg-blue-500/40 text-white' :
                           domain === 'gmail.com' ? 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30' :
@@ -1280,7 +1419,7 @@ function App() {
                       <span className="text-sm font-semibold text-white">Top Cities</span>
                     </div>
                     {cityFilter && (
-                      <button onClick={() => setCityFilter('')} className="text-[10px] text-purple-400 hover:underline">Clear City</button>
+                      <button onClick={() => handleCityClick('')} className="text-[10px] text-purple-400 hover:underline">Clear City</button>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1290,7 +1429,7 @@ function App() {
                       .map(([city, count]) => (
                         <button 
                           key={city}
-                          onClick={() => setCityFilter(cityFilter === city ? '' : city)}
+                          onClick={() => handleCityClick(city)}
                           className={`px-3 py-1 rounded-full text-xs font-medium transition-all hover:scale-105 ${
                             cityFilter.toLowerCase() === city.toLowerCase()
                               ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30 border border-purple-400'
@@ -1310,7 +1449,7 @@ function App() {
                       <span className="text-sm font-semibold text-white">State/Country Codes</span>
                     </div>
                     {stateFilter !== 'all' && (
-                      <button onClick={() => setStateFilter('all')} className="text-[10px] text-amber-400 hover:underline">Clear State</button>
+                      <button onClick={() => handleStateClick('all')} className="text-[10px] text-amber-400 hover:underline">Clear State</button>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1320,7 +1459,7 @@ function App() {
                       .map(([state, count]) => (
                         <button 
                           key={state}
-                          onClick={() => setStateFilter(stateFilter === state ? 'all' : state)}
+                          onClick={() => handleStateClick(state)}
                           className={`px-3 py-1 rounded-full text-xs font-semibold transition-all hover:scale-105 ${
                             stateFilter.toUpperCase() === state.toUpperCase()
                               ? 'bg-amber-500 text-slate-950 font-bold shadow-lg shadow-amber-500/30 border border-amber-300'
@@ -1338,12 +1477,12 @@ function App() {
             {/* Summary Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <SummaryCardDark label="Total Records" value={extractedData.length} icon={<Database className="w-5 h-5 text-blue-400" />} color="blue" />
-              <SummaryCardDark label="Names Found" value={stats?.names ?? extractedData.length} icon={<User className="w-5 h-5 text-indigo-400" />} color="indigo" />
-              <SummaryCardDark label="Phone Numbers" value={stats?.phones ?? extractedData.length} icon={<Phone className="w-5 h-5 text-emerald-400" />} color="emerald" />
-              <SummaryCardDark label="Valid Emails" value={stats?.validEmails ?? extractedData.length} icon={<Mail className="w-5 h-5 text-rose-400" />} color="rose" />
+              <SummaryCardDark label="Names Found" value={stats?.names ?? 0} icon={<User className="w-5 h-5 text-indigo-400" />} color="indigo" />
+              <SummaryCardDark label="Phone Numbers" value={stats?.phones ?? 0} icon={<Phone className="w-5 h-5 text-emerald-400" />} color="emerald" />
+              <SummaryCardDark label="Valid Emails" value={stats?.validEmails ?? 0} icon={<Mail className="w-5 h-5 text-rose-400" />} color="rose" />
             </div>
 
-            {/* Enhanced Toolbar with City and State Dropdowns */}
+            {/* Enhanced Toolbar */}
             <div className={`${cardClass} rounded-2xl p-4 border border-[#1e293b]/30 flex flex-wrap items-center gap-3`}>
               <div className="relative flex-1 min-w-[180px]">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -1371,7 +1510,6 @@ function App() {
                 </select>
               </div>
 
-              {/* City Dropdown & Custom Search */}
               <div className="flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-purple-400" />
                 <select
@@ -1395,7 +1533,6 @@ function App() {
                 />
               </div>
 
-              {/* State / Country Code Dropdown */}
               <div className="flex items-center gap-2">
                 <Flag className="w-4 h-4 text-amber-400" />
                 <select
@@ -1412,15 +1549,9 @@ function App() {
                 </select>
               </div>
 
-              {/* Reset Filters button if any filter active */}
               {(searchTerm || providerFilter !== 'all' || cityFilter || stateFilter !== 'all') && (
                 <button
-                  onClick={() => {
-                    setSearchTerm('');
-                    setProviderFilter('all');
-                    setCityFilter('');
-                    setStateFilter('all');
-                  }}
+                  onClick={handleResetFilters}
                   className="px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl transition-all flex items-center gap-1"
                 >
                   <XCircle className="w-3.5 h-3.5 text-amber-400" /> Reset Filters ({filteredData.length}/{extractedData.length})
@@ -1638,7 +1769,6 @@ function App() {
   );
 }
 
-// Dark Theme Helper Components
 function StatCardDark({ label, value, icon, color }: { label: string; value: number; icon: React.ReactNode; color: string }) {
   const colorMap: { [key: string]: string } = {
     blue: 'from-blue-500/20 to-indigo-500/20 border-blue-500/30 text-blue-400',
