@@ -2,7 +2,8 @@
 // Application Constants
 
 if (!defined('UPLOAD_DIR')) {
-    define('UPLOAD_DIR', __DIR__ . '/../../uploads/');
+    // Use absolute path based on current file location (cPanel compatible)
+    define('UPLOAD_DIR', dirname(dirname(__DIR__)) . '/uploads/');
 }
 
 if (!defined('MAX_FILE_SIZE')) {

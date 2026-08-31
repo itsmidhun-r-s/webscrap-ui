@@ -34,9 +34,9 @@ if (file_exists($envFile)) {
 
 // Database configuration
 $host = isset($envVars['DB_HOST']) ? $envVars['DB_HOST'] : 'localhost';
-$username = isset($envVars['DB_USERNAME']) ? $envVars['DB_USERNAME'] : 'root';
+$username = isset($envVars['DB_USERNAME']) ? $envVars['DB_USERNAME'] : 'thekidsw_webscrap';
 $password = isset($envVars['DB_PASSWORD']) ? $envVars['DB_PASSWORD'] : '';
-$database = isset($envVars['DB_DATABASE']) ? $envVars['DB_DATABASE'] : 'dataextract-excel';
+$database = isset($envVars['DB_DATABASE']) ? $envVars['DB_DATABASE'] : 'thekidsw_webscrap';
 
 // Connect to MySQL server with Exception Safety
 try {
