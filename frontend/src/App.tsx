@@ -10,7 +10,7 @@ const {
   Shield, ChevronRight, Upload,
   BarChart3, Filter, Rocket, BadgeCheck,
   Brain, Moon, Sun, FolderOpen, History, Layers, Merge,
-  MapPin, Flag
+  MapPin, Flag, AlertTriangle, CheckSquare, Square
 } = LucideIcons;
 
 // Valid email providers
@@ -234,14 +234,22 @@ interface PendingFile {
   fileName: string;
   fileSize: string;
   progress: number;
-  status: 'pending' | 'extracting' | 'complete' | 'error';
+  status: 'pending' | 'extracting' | 'complete' | 'error' | 'duplicate';
   extractedData?: any[];
   stats?: any;
+}
+
+interface DuplicateFileInfo {
+  fileName: string;
+  fileSize: string;
+  reason: 'exact_match' | 'similar_name';
 }
 
 function App() {
   const [activeView, setActiveView] = useState('dashboard');
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [duplicateFiles, setDuplicateFiles] = useState<DuplicateFileInfo[]>([]);
+  const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionComplete, setExtractionComplete] = useState(false);
   const [extractedData, setExtractedData] = useState<any[]>([]);
@@ -259,213 +267,147 @@ function App() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileInfo[]>([]);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [isMerging, setIsMerging] = useState(false);
+  const [selectedFilesForDeletion, setSelectedFilesForDeletion] = useState<string[]>([]);
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const pageSize = 5;
 
-  const loadSavedFiles = async () => {
+  // Toggle file selection for batch delete
+  const toggleFileSelectionForDeletion = (fileId: string) => {
+    setSelectedFilesForDeletion(prev => 
+      prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]
+    );
+  };
+
+  // Toggle all files selection for batch delete
+  const toggleAllFilesForDeletion = () => {
+    if (selectedFilesForDeletion.length === uploadedFiles.length) {
+      setSelectedFilesForDeletion([]);
+    } else {
+      setSelectedFilesForDeletion(uploadedFiles.map(f => f.id));
+    }
+  };
+
+  // Batch delete selected files
+  const batchDeleteSelectedFiles = async () => {
+    if (selectedFilesForDeletion.length === 0) {
+      alert('Please select at least one file to delete.');
+      return;
+    }
+
+    const filesToDelete = uploadedFiles.filter(f => selectedFilesForDeletion.includes(f.id));
+    const mergedFiles = filesToDelete.filter(f => f.isMerged);
+    const originalFiles = filesToDelete.filter(f => !f.isMerged);
+    
+    let confirmMessage = `Are you sure you want to delete ${selectedFilesForDeletion.length} file(s)?\n\n`;
+    if (originalFiles.length > 0) {
+      confirmMessage += `📄 ${originalFiles.length} original file(s)\n`;
+    }
+    if (mergedFiles.length > 0) {
+      confirmMessage += `🟣 ${mergedFiles.length} merged file(s)\n`;
+    }
+    confirmMessage += `\nThis action cannot be undone!`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setIsBatchDeleting(true);
+
     try {
-      const backendRes = await fetchFilesFromBackend();
-      if (backendRes && backendRes.success && Array.isArray(backendRes.files) && backendRes.files.length > 0) {
-        const normalizedFiles = backendRes.files.map((f: any) => ({
-          ...f,
-          data: normalizeRecords(f.data || [], f.filename)
-        }));
-        setUploadedFiles(normalizedFiles);
-        if (!selectedFileId) {
-          const latestFile = normalizedFiles[0];
-          setSelectedFileId(latestFile.id);
-          setExtractedData(latestFile.data || []);
-          setStats(latestFile.stats || { total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+      // Delete from backend
+      for (const fileId of selectedFilesForDeletion) {
+        try {
+          await deleteFileFromBackend(fileId);
+        } catch (err) {
+          console.warn(`Failed to delete file ${fileId} from backend:`, err);
         }
-        return;
       }
-    } catch (error) {
-      console.warn('Backend database fetch unavailable or empty, fallback to localStorage:', error);
-    }
 
-    try {
-      const saved = localStorage.getItem('uploadedFiles');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const normalizedFiles = parsed.map((f: any) => ({
-          ...f,
-          data: normalizeRecords(f.data || [], f.filename)
-        }));
-        setUploadedFiles(normalizedFiles);
-        if (normalizedFiles.length > 0 && !selectedFileId) {
-          setSelectedFileId(normalizedFiles[normalizedFiles.length - 1].id);
-          setExtractedData(normalizedFiles[normalizedFiles.length - 1].data || []);
-          setStats(normalizedFiles[normalizedFiles.length - 1].stats || { total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+      // Remove from local state
+      const remainingFiles = uploadedFiles.filter(f => !selectedFilesForDeletion.includes(f.id));
+      setUploadedFiles(remainingFiles);
+      saveFilesToStorage(remainingFiles);
+
+      // Update selected file if it was deleted
+      if (selectedFileId && selectedFilesForDeletion.includes(selectedFileId)) {
+        if (remainingFiles.length > 0) {
+          setSelectedFileId(remainingFiles[0].id);
+          loadFileData(remainingFiles[0].id);
+        } else {
+          setExtractedData([]);
+          setStats({ total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+          setSelectedFileId(null);
+          setActiveView('dashboard');
         }
       }
+
+      setSelectedFilesForDeletion([]);
+      setShowBatchDeleteConfirm(false);
+      alert(`✅ Successfully deleted ${selectedFilesForDeletion.length} file(s)!`);
     } catch (error) {
-      console.error('Error loading saved files:', error);
+      console.error('Error during batch delete:', error);
+      alert('Error deleting files. Please try again.');
+    } finally {
+      setIsBatchDeleting(false);
     }
   };
 
-  const loadFileData = (fileId: string) => {
-    const file = uploadedFiles.find(f => f.id === fileId);
-    if (file) {
-      const normData = normalizeRecords(file.data || [], file.filename);
-      setExtractedData(normData);
-      setStats(file.stats);
-      setExtractionComplete(true);
-      setActiveView('results');
-      setSelectedFileId(fileId);
-      // Reset filters when switching files
-      setProviderFilter('all');
-      setCityFilter('');
-      setStateFilter('all');
-      setSearchTerm('');
-      setCurrentPage(1);
-    }
-  };
-
-  const saveFilesToStorage = (files: UploadedFileInfo[]) => {
-    try {
-      localStorage.setItem('uploadedFiles', JSON.stringify(files));
-    } catch (error) {
-      console.error('Error saving files:', error);
-    }
-  };
-
-  useEffect(() => {
-    loadSavedFiles();
-  }, []);
-
-  useEffect(() => {
-    if (uploadedFiles.length > 0) {
-      saveFilesToStorage(uploadedFiles);
-    }
-  }, [uploadedFiles]);
-
-  // Compute domain statistics from extracted data
-  const domainStats = useMemo(() => {
-    const stats: { [key: string]: number } = {};
-    extractedData.forEach(row => {
-      const domain = row.domain || 'unknown';
-      stats[domain] = (stats[domain] || 0) + 1;
-    });
-    return stats;
-  }, [extractedData]);
-
-  // Compute city statistics
-  const cityStats = useMemo(() => {
-    const stats: { [key: string]: number } = {};
-    extractedData.forEach(row => {
-      const city = row.city ? formatCityName(row.city) : 'Unknown';
-      stats[city] = (stats[city] || 0) + 1;
-    });
-    return stats;
-  }, [extractedData]);
-
-  // Compute state statistics
-  const stateStats = useMemo(() => {
-    const stats: { [key: string]: number } = {};
-    extractedData.forEach(row => {
-      const state = row.state ? row.state.toUpperCase() : 'Unknown';
-      stats[state] = (stats[state] || 0) + 1;
-    });
-    return stats;
-  }, [extractedData]);
-
-  // Unique cities
-  const uniqueCities = useMemo(() => {
-    const cities = new Set<string>();
-    extractedData.forEach(row => {
-      if (row.city && row.city.trim() !== '') cities.add(formatCityName(row.city));
-    });
-    return Array.from(cities).sort();
-  }, [extractedData]);
-
-  // Unique states
-  const uniqueStates = useMemo(() => {
-    const states = new Set<string>();
-    extractedData.forEach(row => {
-      if (row.state && row.state.trim() !== '') states.add(row.state.toUpperCase());
-    });
-    return Array.from(states).sort();
-  }, [extractedData]);
-
-  // FIXED: Filter and sort data
-  const filteredData = useMemo(() => {
-    if (!extractedData || extractedData.length === 0) return [];
-    
-    let data = [...extractedData];
-    
-    // Search filter - check all fields
-    if (searchTerm && searchTerm.trim() !== '') {
-      const s = searchTerm.toLowerCase().trim();
-      data = data.filter(row => {
-        const name = (row.name || '').toLowerCase();
-        const phone = (row.phone || '').toLowerCase();
-        const email = (row.email || '').toLowerCase();
-        const city = (row.city || '').toLowerCase();
-        const state = (row.state || '').toLowerCase();
-        const domain = (row.domain || '').toLowerCase();
-        return name.includes(s) || phone.includes(s) || email.includes(s) || 
-               city.includes(s) || state.includes(s) || domain.includes(s);
-      });
-    }
-    
-    // Provider filter - exact match
-    if (providerFilter !== 'all') {
-      data = data.filter(row => {
-        const domain = (row.domain || '').toLowerCase();
-        return domain === providerFilter.toLowerCase();
-      });
-    }
-
-    // City filter - partial match
-    if (cityFilter && cityFilter.trim() !== '') {
-      const c = cityFilter.toLowerCase().trim();
-      data = data.filter(row => {
-        const city = (row.city || '').toLowerCase();
-        return city.includes(c);
-      });
-    }
-
-    // State filter - exact match
-    if (stateFilter !== 'all') {
-      data = data.filter(row => {
-        const state = (row.state || '').toUpperCase();
-        return state === stateFilter.toUpperCase();
-      });
-    }
-    
-    // Sort
-    if (sortConfig.key) {
-      data = [...data].sort((a, b) => {
-        const aVal = (a[sortConfig.key as keyof typeof a] || '').toString().toLowerCase();
-        const bVal = (b[sortConfig.key as keyof typeof b] || '').toString().toLowerCase();
-        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-        return 0;
-      });
-    }
-    return data;
-  }, [extractedData, searchTerm, providerFilter, cityFilter, stateFilter, sortConfig]);
-
-  const totalResults = filteredData.length;
-  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
-  
-  const paginatedData = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredData.slice(start, start + pageSize);
-  }, [filteredData, currentPage, pageSize]);
-
-  // Reset to page 1 when any filter changes
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchTerm, providerFilter, cityFilter, stateFilter]);
-
-  // Check for duplicate files
-  const getDuplicateFiles = (files: File[]): File[] => {
+  const checkDuplicateFiles = (files: File[]): { unique: File[], duplicates: DuplicateFileInfo[] } => {
     const existingFilenames = new Set(uploadedFiles.map(f => f.filename.toLowerCase()));
     const pendingFilenames = new Set(pendingFiles.map(f => f.fileName.toLowerCase()));
-    return files.filter(file => {
-      const name = file.name.toLowerCase();
-      return existingFilenames.has(name) || pendingFilenames.has(name);
-    });
+    
+    const unique: File[] = [];
+    const duplicates: DuplicateFileInfo[] = [];
+    const seenNames = new Set<string>();
+
+    for (const file of files) {
+      const fileNameLower = file.name.toLowerCase();
+      const fileNameWithoutExt = file.name.replace(/\.[^.]+$/, '').toLowerCase();
+      
+      let isDuplicate = false;
+      let duplicateReason: 'exact_match' | 'similar_name' = 'exact_match';
+      
+      if (existingFilenames.has(fileNameLower) || pendingFilenames.has(fileNameLower)) {
+        isDuplicate = true;
+        duplicateReason = 'exact_match';
+      }
+      
+      if (!isDuplicate) {
+        for (const existingName of existingFilenames) {
+          const existingWithoutExt = existingName.replace(/\.[^.]+$/, '').toLowerCase();
+          if (fileNameWithoutExt === existingWithoutExt) {
+            isDuplicate = true;
+            duplicateReason = 'similar_name';
+            break;
+          }
+        }
+      }
+      
+      if (!isDuplicate) {
+        for (const pendingName of pendingFilenames) {
+          const pendingWithoutExt = pendingName.replace(/\.[^.]+$/, '').toLowerCase();
+          if (fileNameWithoutExt === pendingWithoutExt) {
+            isDuplicate = true;
+            duplicateReason = 'similar_name';
+            break;
+          }
+        }
+      }
+      
+      if (isDuplicate) {
+        duplicates.push({
+          fileName: file.name,
+          fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          reason: duplicateReason
+        });
+      } else if (!seenNames.has(fileNameLower)) {
+        seenNames.add(fileNameLower);
+        unique.push(file);
+      }
+    }
+    
+    return { unique, duplicates };
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -473,25 +415,28 @@ function App() {
     if (files && files.length > 0) {
       const fileArray = Array.from(files);
       
-      const duplicates = getDuplicateFiles(fileArray);
+      const { unique, duplicates } = checkDuplicateFiles(fileArray);
+      
       if (duplicates.length > 0) {
-        const duplicateNames = duplicates.map(f => f.name).join(', ');
-        alert(`The following files are already uploaded or pending:\n${duplicateNames}\n\nPlease remove duplicates and try again.`);
-        const input = document.getElementById('fileInput') as HTMLInputElement;
-        if (input) input.value = '';
-        return;
+        setDuplicateFiles(duplicates);
+        setShowDuplicateWarning(true);
       }
       
-      const newPendingFiles: PendingFile[] = fileArray.map(file => ({
-        file: file,
-        fileName: file.name,
-        fileSize: (file.size / 1024).toFixed(1) + ' KB',
-        progress: 0,
-        status: 'pending'
-      }));
+      if (unique.length > 0) {
+        const newPendingFiles: PendingFile[] = unique.map(file => ({
+          file: file,
+          fileName: file.name,
+          fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          progress: 0,
+          status: 'pending'
+        }));
+        
+        setPendingFiles(prev => [...prev, ...newPendingFiles]);
+        extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      }
       
-      setPendingFiles(prev => [...prev, ...newPendingFiles]);
-      extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      const input = document.getElementById('fileInput') as HTMLInputElement;
+      if (input) input.value = '';
     }
   };
 
@@ -517,24 +462,38 @@ function App() {
         return;
       }
       
-      const duplicates = getDuplicateFiles(fileArray);
+      const { unique, duplicates } = checkDuplicateFiles(fileArray);
+      
       if (duplicates.length > 0) {
-        const duplicateNames = duplicates.map(f => f.name).join(', ');
-        alert(`The following files are already uploaded or pending:\n${duplicateNames}\n\nPlease remove duplicates and try again.`);
-        return;
+        setDuplicateFiles(duplicates);
+        setShowDuplicateWarning(true);
       }
       
-      const newPendingFiles: PendingFile[] = fileArray.map(file => ({
-        file: file,
-        fileName: file.name,
-        fileSize: (file.size / 1024).toFixed(1) + ' KB',
-        progress: 0,
-        status: 'pending'
-      }));
-      
-      setPendingFiles(prev => [...prev, ...newPendingFiles]);
-      extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      if (unique.length > 0) {
+        const newPendingFiles: PendingFile[] = unique.map(file => ({
+          file: file,
+          fileName: file.name,
+          fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          progress: 0,
+          status: 'pending'
+        }));
+        
+        setPendingFiles(prev => [...prev, ...newPendingFiles]);
+        extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      }
     }
+  };
+
+  const removeDuplicateFromList = (fileName: string) => {
+    setDuplicateFiles(prev => prev.filter(d => d.fileName !== fileName));
+    if (duplicateFiles.length === 1) {
+      setShowDuplicateWarning(false);
+    }
+  };
+
+  const clearAllDuplicates = () => {
+    setDuplicateFiles([]);
+    setShowDuplicateWarning(false);
   };
 
   const removePendingFile = (index: number) => {
@@ -656,7 +615,6 @@ function App() {
           setExtractedData(unique);
           setStats(newStats);
           setExtractionComplete(true);
-          // Reset filters when new data is loaded
           setProviderFilter('all');
           setCityFilter('');
           setStateFilter('all');
@@ -676,11 +634,194 @@ function App() {
     setIsExtracting(false);
   };
 
+  const loadSavedFiles = async () => {
+    try {
+      const backendRes = await fetchFilesFromBackend();
+      if (backendRes && backendRes.success && Array.isArray(backendRes.files) && backendRes.files.length > 0) {
+        const normalizedFiles = backendRes.files.map((f: any) => ({
+          ...f,
+          data: normalizeRecords(f.data || [], f.filename)
+        }));
+        setUploadedFiles(normalizedFiles);
+        if (!selectedFileId) {
+          const latestFile = normalizedFiles[0];
+          setSelectedFileId(latestFile.id);
+          setExtractedData(latestFile.data || []);
+          setStats(latestFile.stats || { total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+        }
+        return;
+      }
+    } catch (error) {
+      console.warn('Backend database fetch unavailable or empty, fallback to localStorage:', error);
+    }
+
+    try {
+      const saved = localStorage.getItem('uploadedFiles');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const normalizedFiles = parsed.map((f: any) => ({
+          ...f,
+          data: normalizeRecords(f.data || [], f.filename)
+        }));
+        setUploadedFiles(normalizedFiles);
+        if (normalizedFiles.length > 0 && !selectedFileId) {
+          setSelectedFileId(normalizedFiles[normalizedFiles.length - 1].id);
+          setExtractedData(normalizedFiles[normalizedFiles.length - 1].data || []);
+          setStats(normalizedFiles[normalizedFiles.length - 1].stats || { total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+        }
+      }
+    } catch (error) {
+      console.error('Error loading saved files:', error);
+    }
+  };
+
+  const loadFileData = (fileId: string) => {
+    const file = uploadedFiles.find(f => f.id === fileId);
+    if (file) {
+      const normData = normalizeRecords(file.data || [], file.filename);
+      setExtractedData(normData);
+      setStats(file.stats);
+      setExtractionComplete(true);
+      setActiveView('results');
+      setSelectedFileId(fileId);
+      setProviderFilter('all');
+      setCityFilter('');
+      setStateFilter('all');
+      setSearchTerm('');
+      setCurrentPage(1);
+    }
+  };
+
+  const saveFilesToStorage = (files: UploadedFileInfo[]) => {
+    try {
+      localStorage.setItem('uploadedFiles', JSON.stringify(files));
+    } catch (error) {
+      console.error('Error saving files:', error);
+    }
+  };
+
+  useEffect(() => {
+    loadSavedFiles();
+  }, []);
+
+  useEffect(() => {
+    if (uploadedFiles.length > 0) {
+      saveFilesToStorage(uploadedFiles);
+    }
+  }, [uploadedFiles]);
+
+  const domainStats = useMemo(() => {
+    const stats: { [key: string]: number } = {};
+    extractedData.forEach(row => {
+      const domain = row.domain || 'unknown';
+      stats[domain] = (stats[domain] || 0) + 1;
+    });
+    return stats;
+  }, [extractedData]);
+
+  const cityStats = useMemo(() => {
+    const stats: { [key: string]: number } = {};
+    extractedData.forEach(row => {
+      const city = row.city ? formatCityName(row.city) : 'Unknown';
+      stats[city] = (stats[city] || 0) + 1;
+    });
+    return stats;
+  }, [extractedData]);
+
+  const stateStats = useMemo(() => {
+    const stats: { [key: string]: number } = {};
+    extractedData.forEach(row => {
+      const state = row.state ? row.state.toUpperCase() : 'Unknown';
+      stats[state] = (stats[state] || 0) + 1;
+    });
+    return stats;
+  }, [extractedData]);
+
+  const uniqueCities = useMemo(() => {
+    const cities = new Set<string>();
+    extractedData.forEach(row => {
+      if (row.city && row.city.trim() !== '') cities.add(formatCityName(row.city));
+    });
+    return Array.from(cities).sort();
+  }, [extractedData]);
+
+  const uniqueStates = useMemo(() => {
+    const states = new Set<string>();
+    extractedData.forEach(row => {
+      if (row.state && row.state.trim() !== '') states.add(row.state.toUpperCase());
+    });
+    return Array.from(states).sort();
+  }, [extractedData]);
+
+  const filteredData = useMemo(() => {
+    if (!extractedData || extractedData.length === 0) return [];
+    
+    let data = [...extractedData];
+    
+    if (searchTerm && searchTerm.trim() !== '') {
+      const s = searchTerm.toLowerCase().trim();
+      data = data.filter(row => {
+        const name = (row.name || '').toLowerCase();
+        const phone = (row.phone || '').toLowerCase();
+        const email = (row.email || '').toLowerCase();
+        const city = (row.city || '').toLowerCase();
+        const state = (row.state || '').toLowerCase();
+        const domain = (row.domain || '').toLowerCase();
+        return name.includes(s) || phone.includes(s) || email.includes(s) || 
+               city.includes(s) || state.includes(s) || domain.includes(s);
+      });
+    }
+    
+    if (providerFilter !== 'all') {
+      data = data.filter(row => {
+        const domain = (row.domain || '').toLowerCase();
+        return domain === providerFilter.toLowerCase();
+      });
+    }
+
+    if (cityFilter && cityFilter.trim() !== '') {
+      const c = cityFilter.toLowerCase().trim();
+      data = data.filter(row => {
+        const city = (row.city || '').toLowerCase();
+        return city.includes(c);
+      });
+    }
+
+    if (stateFilter !== 'all') {
+      data = data.filter(row => {
+        const state = (row.state || '').toUpperCase();
+        return state === stateFilter.toUpperCase();
+      });
+    }
+    
+    if (sortConfig.key) {
+      data = [...data].sort((a, b) => {
+        const aVal = (a[sortConfig.key as keyof typeof a] || '').toString().toLowerCase();
+        const bVal = (b[sortConfig.key as keyof typeof b] || '').toString().toLowerCase();
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    return data;
+  }, [extractedData, searchTerm, providerFilter, cityFilter, stateFilter, sortConfig]);
+
+  const totalResults = filteredData.length;
+  const totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+  
+  const paginatedData = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredData.slice(start, start + pageSize);
+  }, [filteredData, currentPage, pageSize]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, providerFilter, cityFilter, stateFilter]);
+
   const goToDashboard = () => {
     setActiveView('dashboard');
     setCurrentPage(1);
     setSelectedRows([]);
-    // Reset filters when going to dashboard
     setProviderFilter('all');
     setCityFilter('');
     setStateFilter('all');
@@ -814,7 +955,6 @@ function App() {
       setStats(mergedStats);
       setExtractionComplete(true);
       setActiveView('results');
-      // Reset filters
       setProviderFilter('all');
       setCityFilter('');
       setStateFilter('all');
@@ -931,7 +1071,6 @@ function App() {
     return uploadedFiles.filter(f => !f.isMerged).length;
   };
 
-  // Filter click handlers
   const handleProviderClick = (provider: string) => {
     setProviderFilter(providerFilter === provider ? 'all' : provider);
     setCurrentPage(1);
@@ -1018,6 +1157,125 @@ function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 relative z-10">
+        {/* Duplicate File Warning Modal */}
+        {showDuplicateWarning && duplicateFiles.length > 0 && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className={`${cardClass} rounded-2xl p-6 max-w-lg w-full mx-4 border border-amber-500/30 shadow-2xl shadow-amber-500/20`}>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-amber-500/20 rounded-xl">
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Duplicate Files Detected</h3>
+                  <p className="text-sm text-slate-400">The following files are duplicates and will not be uploaded</p>
+                </div>
+              </div>
+              
+              <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
+                {duplicateFiles.map((dup, index) => (
+                  <div key={index} className="bg-[#1a2332]/50 rounded-lg p-3 border border-amber-500/20 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <FileSpreadsheet className="w-4 h-4 text-amber-400" />
+                      <div>
+                        <span className="text-sm text-white">{dup.fileName}</span>
+                        <span className="text-xs text-slate-400 ml-2">({dup.fileSize})</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                        dup.reason === 'exact_match' 
+                          ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                          : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                      }`}>
+                        {dup.reason === 'exact_match' ? 'Exact Match' : 'Similar Name'}
+                      </span>
+                      <button
+                        onClick={() => removeDuplicateFromList(dup.fileName)}
+                        className="text-slate-400 hover:text-red-400 transition-colors"
+                      >
+                        <XCircle className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={clearAllDuplicates}
+                  className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-all"
+                >
+                  Dismiss All
+                </button>
+                <button
+                  onClick={() => setShowDuplicateWarning(false)}
+                  className="px-6 py-2 text-sm font-medium text-white bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 rounded-xl transition-all shadow-lg shadow-amber-500/30 hover:shadow-xl"
+                >
+                  Continue with {duplicateFiles.length} Duplicate{duplicateFiles.length > 1 ? 's' : ''} Skipped
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Batch Delete Confirmation Modal */}
+        {showBatchDeleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className={`${cardClass} rounded-2xl p-6 max-w-md w-full mx-4 border border-red-500/30 shadow-2xl shadow-red-500/20`}>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-red-500/20 rounded-xl">
+                  <AlertTriangle className="w-6 h-6 text-red-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Confirm Batch Delete</h3>
+                  <p className="text-sm text-slate-400">You are about to delete {selectedFilesForDeletion.length} file(s)</p>
+                </div>
+              </div>
+              
+              <div className="bg-[#1a2332]/50 rounded-lg p-3 mb-4 max-h-40 overflow-y-auto">
+                {selectedFilesForDeletion.map(fileId => {
+                  const file = uploadedFiles.find(f => f.id === fileId);
+                  return file ? (
+                    <div key={fileId} className="flex items-center gap-2 py-1 text-sm text-slate-300 border-b border-[#1e293b]/30 last:border-0">
+                      <FileSpreadsheet className="w-3 h-3 text-red-400" />
+                      <span>{file.filename}</span>
+                      <span className="text-xs text-slate-500 ml-auto">{file.recordCount} records</span>
+                    </div>
+                  ) : null;
+                })}
+              </div>
+              
+              <p className="text-sm text-red-400 mb-4">⚠️ This action cannot be undone!</p>
+              
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  onClick={() => setShowBatchDeleteConfirm(false)}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={batchDeleteSelectedFiles}
+                  disabled={isBatchDeleting}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 rounded-xl transition-all shadow-lg shadow-red-500/30 hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isBatchDeleting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      Delete {selectedFilesForDeletion.length} File{selectedFilesForDeletion.length > 1 ? 's' : ''}
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeView === 'dashboard' ? (
           <div className="space-y-10">
             {/* Hero Section */}
@@ -1064,6 +1322,7 @@ function App() {
                         </div>
                         <p className="text-xl font-semibold text-white">Drop your Excel files here</p>
                         <p className="text-sm text-slate-400 mt-2">or click to browse (multiple files allowed)</p>
+                        <p className="text-xs text-amber-400 mt-1">⚠️ Duplicate files will be automatically skipped</p>
                         <input id="fileInput" type="file" accept=".xlsx,.xls" onChange={handleFileChange} multiple className="hidden" />
                         <button 
                           onClick={() => document.getElementById('fileInput')?.click()} 
@@ -1211,7 +1470,7 @@ function App() {
               </div>
             </div>
 
-            {/* Uploaded Files History */}
+            {/* Uploaded Files History with Batch Delete */}
             <div className={`${cardClass} rounded-2xl p-6 border border-[#1e293b]/30`}>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
@@ -1219,6 +1478,29 @@ function App() {
                   <h3 className="font-semibold text-white">Uploaded Files History ({uploadedFiles.length})</h3>
                 </div>
                 <div className="flex items-center gap-2">
+                  {selectedFilesForDeletion.length > 0 && (
+                    <button
+                      onClick={() => setShowBatchDeleteConfirm(true)}
+                      disabled={isBatchDeleting}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-xl transition-all shadow-lg shadow-red-500/30 hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete Selected ({selectedFilesForDeletion.length})
+                    </button>
+                  )}
+                  {uploadedFiles.length > 0 && (
+                    <button
+                      onClick={toggleAllFilesForDeletion}
+                      className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white rounded-lg transition-all"
+                    >
+                      {selectedFilesForDeletion.length === uploadedFiles.length ? (
+                        <CheckSquare className="w-3 h-3" />
+                      ) : (
+                        <Square className="w-3 h-3" />
+                      )}
+                      {selectedFilesForDeletion.length === uploadedFiles.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                  )}
                   {uploadedFiles.some(f => f.isMerged) && (
                     <button
                       onClick={deleteMergedFileOnly}
@@ -1256,39 +1538,52 @@ function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {uploadedFiles.slice().reverse().map((f) => (
-                    <div
-                      key={f.id}
-                      onClick={() => switchFile(f.id)}
-                      className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                        selectedFileId === f.id 
-                          ? 'border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10' 
-                          : 'border-[#1e293b] bg-[#1a2332]/50 hover:border-blue-400 hover:bg-blue-500/5'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <FileSpreadsheet className={`w-4 h-4 ${f.isMerged ? 'text-purple-400' : 'text-emerald-400'}`} />
-                        <span className="text-sm text-white truncate flex-1">{f.filename}</span>
-                        {f.isMerged && (
-                          <span className="text-[8px] font-bold text-purple-400 bg-purple-500/20 px-1.5 py-0.5 rounded">MERGED</span>
-                        )}
+                  {uploadedFiles.slice().reverse().map((f) => {
+                    const isSelected = selectedFilesForDeletion.includes(f.id);
+                    return (
+                      <div
+                        key={f.id}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                          isSelected 
+                            ? 'border-red-500 bg-red-500/10 shadow-lg shadow-red-500/10' 
+                            : selectedFileId === f.id 
+                              ? 'border-blue-500 bg-blue-500/10 shadow-lg shadow-blue-500/10' 
+                              : 'border-[#1e293b] bg-[#1a2332]/50 hover:border-blue-400 hover:bg-blue-500/5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleFileSelectionForDeletion(f.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="rounded border-[#1e293b] bg-[#1a2332] text-red-500 focus:ring-red-500/50 cursor-pointer"
+                          />
+                          <div onClick={() => switchFile(f.id)} className="flex items-center gap-2 flex-1">
+                            <FileSpreadsheet className={`w-4 h-4 ${f.isMerged ? 'text-purple-400' : 'text-emerald-400'}`} />
+                            <span className="text-sm text-white truncate flex-1">{f.filename}</span>
+                            {f.isMerged && (
+                              <span className="text-[8px] font-bold text-purple-400 bg-purple-500/20 px-1.5 py-0.5 rounded">MERGED</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1 text-xs text-slate-400 ml-6">
+                          <span>{f.recordCount} records</span>
+                          <span>•</span>
+                          <span>{f.fileSize}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1 ml-6">
+                          <span className="text-xs text-slate-500">{f.uploadedAt}</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteFile(f.id); }}
+                            className="text-red-400 hover:text-red-300 transition-colors"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
-                        <span>{f.recordCount} records</span>
-                        <span>•</span>
-                        <span>{f.fileSize}</span>
-                      </div>
-                      <div className="flex items-center justify-between mt-1">
-                        <span className="text-xs text-slate-500">{f.uploadedAt}</span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); deleteFile(f.id); }}
-                          className="text-red-400 hover:text-red-300 transition-colors"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
@@ -1345,7 +1640,7 @@ function App() {
             )}
           </div>
         ) : (
-          // Results View
+          // Results View - same as before with minor changes
           <div className="space-y-6 animate-in fade-in duration-500">
             {/* File Selector */}
             <div className={`${cardClass} rounded-2xl p-3 border border-[#1e293b]/30`}>
@@ -1482,7 +1777,7 @@ function App() {
               <SummaryCardDark label="Valid Emails" value={stats?.validEmails ?? 0} icon={<Mail className="w-5 h-5 text-rose-400" />} color="rose" />
             </div>
 
-            {/* Enhanced Toolbar */}
+            {/* Toolbar */}
             <div className={`${cardClass} rounded-2xl p-4 border border-[#1e293b]/30 flex flex-wrap items-center gap-3`}>
               <div className="relative flex-1 min-w-[180px]">
                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -1754,9 +2049,9 @@ function App() {
                 <FileSpreadsheet className="w-4 h-4 text-white" />
               </div>
               <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-slate-700'}`}>DataExtract</span>
-              <span className={`text-xs ${isDarkMode ? 'text-slate-400 bg-[#1e293b]' : 'text-slate-400 bg-slate-100'} px-2 py-0.5 rounded-full`}>v4.0</span>
+              <span className={`text-xs ${isDarkMode ? 'text-slate-400 bg-[#1e293b]' : 'text-slate-400 bg-slate-100'} px-2 py-0.5 rounded-full`}>v4.1</span>
             </div>
-            <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-400'}`}>© 2026 DataExtract — Multi-file Excel extraction with location filtering</p>
+            <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-400'}`}>© 2026 DataExtract — Multi-file Excel extraction with batch delete</p>
             <div className="flex items-center gap-6 text-xs text-slate-400">
               <a href="#" className={`hover:${isDarkMode ? 'text-blue-400' : 'text-blue-600'} transition-colors`}>Privacy</a>
               <a href="#" className={`hover:${isDarkMode ? 'text-blue-400' : 'text-blue-600'} transition-colors`}>Terms</a>
