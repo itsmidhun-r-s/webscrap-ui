@@ -242,7 +242,7 @@ interface PendingFile {
 interface DuplicateFileInfo {
   fileName: string;
   fileSize: string;
-  reason: 'exact_match' | 'similar_name';
+  reason: 'exact_match' | 'similar_name' | 'same_base_name';
 }
 
 function App() {
@@ -272,90 +272,51 @@ function App() {
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
   const pageSize = 5;
 
-  // Toggle file selection for batch delete
-  const toggleFileSelectionForDeletion = (fileId: string) => {
-    setSelectedFilesForDeletion(prev => 
-      prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]
-    );
-  };
-
-  // Toggle all files selection for batch delete
-  const toggleAllFilesForDeletion = () => {
-    if (selectedFilesForDeletion.length === uploadedFiles.length) {
-      setSelectedFilesForDeletion([]);
-    } else {
-      setSelectedFilesForDeletion(uploadedFiles.map(f => f.id));
-    }
-  };
-
-  // Batch delete selected files
-  const batchDeleteSelectedFiles = async () => {
-    if (selectedFilesForDeletion.length === 0) {
-      alert('Please select at least one file to delete.');
-      return;
-    }
-
-    const filesToDelete = uploadedFiles.filter(f => selectedFilesForDeletion.includes(f.id));
-    const mergedFiles = filesToDelete.filter(f => f.isMerged);
-    const originalFiles = filesToDelete.filter(f => !f.isMerged);
+  // Helper function to extract base name from filename (remove date and common patterns)
+  const getFileBaseName = (filename: string): string => {
+    let name = filename.replace(/\.[^.]+$/, '');
     
-    let confirmMessage = `Are you sure you want to delete ${selectedFilesForDeletion.length} file(s)?\n\n`;
-    if (originalFiles.length > 0) {
-      confirmMessage += `📄 ${originalFiles.length} original file(s)\n`;
-    }
-    if (mergedFiles.length > 0) {
-      confirmMessage += `🟣 ${mergedFiles.length} merged file(s)\n`;
-    }
-    confirmMessage += `\nThis action cannot be undone!`;
-
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
-
-    setIsBatchDeleting(true);
-
-    try {
-      // Delete from backend
-      for (const fileId of selectedFilesForDeletion) {
-        try {
-          await deleteFileFromBackend(fileId);
-        } catch (err) {
-          console.warn(`Failed to delete file ${fileId} from backend:`, err);
-        }
-      }
-
-      // Remove from local state
-      const remainingFiles = uploadedFiles.filter(f => !selectedFilesForDeletion.includes(f.id));
-      setUploadedFiles(remainingFiles);
-      saveFilesToStorage(remainingFiles);
-
-      // Update selected file if it was deleted
-      if (selectedFileId && selectedFilesForDeletion.includes(selectedFileId)) {
-        if (remainingFiles.length > 0) {
-          setSelectedFileId(remainingFiles[0].id);
-          loadFileData(remainingFiles[0].id);
-        } else {
-          setExtractedData([]);
-          setStats({ total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
-          setSelectedFileId(null);
-          setActiveView('dashboard');
-        }
-      }
-
-      setSelectedFilesForDeletion([]);
-      setShowBatchDeleteConfirm(false);
-      alert(`✅ Successfully deleted ${selectedFilesForDeletion.length} file(s)!`);
-    } catch (error) {
-      console.error('Error during batch delete:', error);
-      alert('Error deleting files. Please try again.');
-    } finally {
-      setIsBatchDeleting(false);
-    }
+    name = name.replace(/[_-]?\d{8}/g, '');
+    name = name.replace(/[_-]?\d{4}-\d{2}-\d{2}/g, '');
+    name = name.replace(/[_-]?\d{6}/g, '');
+    name = name.replace(/[_-]?\d{2}:\d{2}:\d{2}/g, '');
+    name = name.replace(/[_-]?\d{4}/g, '');
+    name = name.replace(/[_\s-]+$/, '');
+    
+    return name.toLowerCase().trim();
   };
 
+  // Helper to get city/state from filename
+  const getLocationFromFilename = (filename: string): string => {
+    const name = filename.toLowerCase();
+    const locationMatch = name.match(/[_-]([a-z]+(?:-[a-z]+)?)(?:[_-]md|-[a-z]{2})?/);
+    if (locationMatch) {
+      return locationMatch[1];
+    }
+    return '';
+  };
+
+  // Improved duplicate detection
   const checkDuplicateFiles = (files: File[]): { unique: File[], duplicates: DuplicateFileInfo[] } => {
     const existingFilenames = new Set(uploadedFiles.map(f => f.filename.toLowerCase()));
     const pendingFilenames = new Set(pendingFiles.map(f => f.fileName.toLowerCase()));
+    
+    // Get base names of existing files
+    const existingBaseNames = new Map<string, string>();
+    uploadedFiles.forEach(f => {
+      const baseName = getFileBaseName(f.filename);
+      if (baseName) {
+        existingBaseNames.set(baseName, f.filename);
+      }
+    });
+    
+    const pendingBaseNames = new Map<string, string>();
+    pendingFiles.forEach(f => {
+      const baseName = getFileBaseName(f.fileName);
+      if (baseName) {
+        pendingBaseNames.set(baseName, f.fileName);
+      }
+    });
     
     const unique: File[] = [];
     const duplicates: DuplicateFileInfo[] = [];
@@ -363,34 +324,74 @@ function App() {
 
     for (const file of files) {
       const fileNameLower = file.name.toLowerCase();
-      const fileNameWithoutExt = file.name.replace(/\.[^.]+$/, '').toLowerCase();
+      const fileBaseName = getFileBaseName(file.name);
+      const location = getLocationFromFilename(file.name);
       
       let isDuplicate = false;
-      let duplicateReason: 'exact_match' | 'similar_name' = 'exact_match';
+      let duplicateReason: 'exact_match' | 'similar_name' | 'same_base_name' = 'exact_match';
       
+      // Check 1: Exact match
       if (existingFilenames.has(fileNameLower) || pendingFilenames.has(fileNameLower)) {
         isDuplicate = true;
         duplicateReason = 'exact_match';
       }
       
-      if (!isDuplicate) {
-        for (const existingName of existingFilenames) {
-          const existingWithoutExt = existingName.replace(/\.[^.]+$/, '').toLowerCase();
-          if (fileNameWithoutExt === existingWithoutExt) {
+      // Check 2: Same base name (ignoring dates and timestamps)
+      if (!isDuplicate && fileBaseName) {
+        // Check against existing files
+        for (const [existingBase] of existingBaseNames) {
+          if (fileBaseName === existingBase) {
             isDuplicate = true;
-            duplicateReason = 'similar_name';
+            duplicateReason = 'same_base_name';
             break;
+          }
+          // Check if they share the same location
+          if (location && existingBase.includes(location)) {
+            isDuplicate = true;
+            duplicateReason = 'same_base_name';
+            break;
+          }
+        }
+        
+        // Check against pending files
+        if (!isDuplicate) {
+          for (const [pendingBase] of pendingBaseNames) {
+            if (fileBaseName === pendingBase) {
+              isDuplicate = true;
+              duplicateReason = 'same_base_name';
+              break;
+            }
+            if (location && pendingBase.includes(location)) {
+              isDuplicate = true;
+              duplicateReason = 'same_base_name';
+              break;
+            }
           }
         }
       }
       
-      if (!isDuplicate) {
-        for (const pendingName of pendingFilenames) {
-          const pendingWithoutExt = pendingName.replace(/\.[^.]+$/, '').toLowerCase();
-          if (fileNameWithoutExt === pendingWithoutExt) {
-            isDuplicate = true;
-            duplicateReason = 'similar_name';
-            break;
+      // Check 3: Similar name (share significant portion)
+      if (!isDuplicate && fileBaseName) {
+        const nameParts = fileBaseName.split(/[_-]/);
+        if (nameParts.length >= 2) {
+          const keyParts = nameParts.slice(0, 2).join('-');
+          
+          for (const [existingBase] of existingBaseNames) {
+            if (existingBase.includes(keyParts) || keyParts.includes(existingBase)) {
+              isDuplicate = true;
+              duplicateReason = 'similar_name';
+              break;
+            }
+          }
+          
+          if (!isDuplicate) {
+            for (const [pendingBase] of pendingBaseNames) {
+              if (pendingBase.includes(keyParts) || keyParts.includes(pendingBase)) {
+                isDuplicate = true;
+                duplicateReason = 'similar_name';
+                break;
+              }
+            }
           }
         }
       }
@@ -433,6 +434,10 @@ function App() {
         
         setPendingFiles(prev => [...prev, ...newPendingFiles]);
         extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      } else if (unique.length === 0 && duplicates.length > 0) {
+        setTimeout(() => {
+          setShowDuplicateWarning(true);
+        }, 100);
       }
       
       const input = document.getElementById('fileInput') as HTMLInputElement;
@@ -480,6 +485,10 @@ function App() {
         
         setPendingFiles(prev => [...prev, ...newPendingFiles]);
         extractAllFiles([...pendingFiles, ...newPendingFiles]);
+      } else if (unique.length === 0 && duplicates.length > 0) {
+        setTimeout(() => {
+          setShowDuplicateWarning(true);
+        }, 100);
       }
     }
   };
@@ -817,6 +826,82 @@ function App() {
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, providerFilter, cityFilter, stateFilter]);
+
+  // Toggle file selection for batch delete
+  const toggleFileSelectionForDeletion = (fileId: string) => {
+    setSelectedFilesForDeletion(prev => 
+      prev.includes(fileId) ? prev.filter(id => id !== fileId) : [...prev, fileId]
+    );
+  };
+
+  const toggleAllFilesForDeletion = () => {
+    if (selectedFilesForDeletion.length === uploadedFiles.length) {
+      setSelectedFilesForDeletion([]);
+    } else {
+      setSelectedFilesForDeletion(uploadedFiles.map(f => f.id));
+    }
+  };
+
+  const batchDeleteSelectedFiles = async () => {
+    if (selectedFilesForDeletion.length === 0) {
+      alert('Please select at least one file to delete.');
+      return;
+    }
+
+    const filesToDelete = uploadedFiles.filter(f => selectedFilesForDeletion.includes(f.id));
+    const mergedFiles = filesToDelete.filter(f => f.isMerged);
+    const originalFiles = filesToDelete.filter(f => !f.isMerged);
+    
+    let confirmMessage = `Are you sure you want to delete ${selectedFilesForDeletion.length} file(s)?\n\n`;
+    if (originalFiles.length > 0) {
+      confirmMessage += `📄 ${originalFiles.length} original file(s)\n`;
+    }
+    if (mergedFiles.length > 0) {
+      confirmMessage += `🟣 ${mergedFiles.length} merged file(s)\n`;
+    }
+    confirmMessage += `\nThis action cannot be undone!`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setIsBatchDeleting(true);
+
+    try {
+      for (const fileId of selectedFilesForDeletion) {
+        try {
+          await deleteFileFromBackend(fileId);
+        } catch (err) {
+          console.warn(`Failed to delete file ${fileId} from backend:`, err);
+        }
+      }
+
+      const remainingFiles = uploadedFiles.filter(f => !selectedFilesForDeletion.includes(f.id));
+      setUploadedFiles(remainingFiles);
+      saveFilesToStorage(remainingFiles);
+
+      if (selectedFileId && selectedFilesForDeletion.includes(selectedFileId)) {
+        if (remainingFiles.length > 0) {
+          setSelectedFileId(remainingFiles[0].id);
+          loadFileData(remainingFiles[0].id);
+        } else {
+          setExtractedData([]);
+          setStats({ total: 0, names: 0, phones: 0, validEmails: 0, skipped: 0, duplicates: 0 });
+          setSelectedFileId(null);
+          setActiveView('dashboard');
+        }
+      }
+
+      setSelectedFilesForDeletion([]);
+      setShowBatchDeleteConfirm(false);
+      alert(`✅ Successfully deleted ${selectedFilesForDeletion.length} file(s)!`);
+    } catch (error) {
+      console.error('Error during batch delete:', error);
+      alert('Error deleting files. Please try again.');
+    } finally {
+      setIsBatchDeleting(false);
+    }
+  };
 
   const goToDashboard = () => {
     setActiveView('dashboard');
@@ -1185,9 +1270,12 @@ function App() {
                       <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
                         dup.reason === 'exact_match' 
                           ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                          : dup.reason === 'same_base_name'
+                          ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
                           : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
                       }`}>
-                        {dup.reason === 'exact_match' ? 'Exact Match' : 'Similar Name'}
+                        {dup.reason === 'exact_match' ? 'Exact Match' : 
+                         dup.reason === 'same_base_name' ? 'Same Base Name' : 'Similar Name'}
                       </span>
                       <button
                         onClick={() => removeDuplicateFromList(dup.fileName)}
@@ -1540,6 +1628,8 @@ function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {uploadedFiles.slice().reverse().map((f) => {
                     const isSelected = selectedFilesForDeletion.includes(f.id);
+                    const displayName = f.filename.length > 30 ? f.filename.substring(0, 30) + '...' : f.filename;
+                    
                     return (
                       <div
                         key={f.id}
@@ -1559,11 +1649,13 @@ function App() {
                             onClick={(e) => e.stopPropagation()}
                             className="rounded border-[#1e293b] bg-[#1a2332] text-red-500 focus:ring-red-500/50 cursor-pointer"
                           />
-                          <div onClick={() => switchFile(f.id)} className="flex items-center gap-2 flex-1">
-                            <FileSpreadsheet className={`w-4 h-4 ${f.isMerged ? 'text-purple-400' : 'text-emerald-400'}`} />
-                            <span className="text-sm text-white truncate flex-1">{f.filename}</span>
+                          <div onClick={() => switchFile(f.id)} className="flex items-center gap-2 flex-1 min-w-0">
+                            <FileSpreadsheet className={`w-4 h-4 flex-shrink-0 ${f.isMerged ? 'text-purple-400' : 'text-emerald-400'}`} />
+                            <span className="text-sm text-white truncate" title={f.filename}>
+                              {displayName}
+                            </span>
                             {f.isMerged && (
-                              <span className="text-[8px] font-bold text-purple-400 bg-purple-500/20 px-1.5 py-0.5 rounded">MERGED</span>
+                              <span className="text-[8px] font-bold text-purple-400 bg-purple-500/20 px-1.5 py-0.5 rounded flex-shrink-0">MERGED</span>
                             )}
                           </div>
                         </div>
@@ -1640,9 +1732,8 @@ function App() {
             )}
           </div>
         ) : (
-          // Results View - same as before with minor changes
+          // Results View
           <div className="space-y-6 animate-in fade-in duration-500">
-            {/* File Selector */}
             <div className={`${cardClass} rounded-2xl p-3 border border-[#1e293b]/30`}>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm text-slate-400 whitespace-nowrap flex items-center gap-1">
@@ -1658,7 +1749,7 @@ function App() {
                         : 'bg-[#1a2332] text-slate-400 border border-[#1e293b] hover:border-blue-400/30'
                     }`}
                   >
-                    {f.filename} ({f.recordCount})
+                    {f.filename.length > 20 ? f.filename.substring(0, 20) + '...' : f.filename} ({f.recordCount})
                     {f.isMerged && ' 🟣'}
                   </button>
                 ))}
@@ -1679,7 +1770,7 @@ function App() {
               </div>
             </div>
 
-            {/* Domain & Location Statistics - Clickable Filters */}
+            {/* Domain & Location Statistics */}
             {extractedData.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className={`${cardClass} rounded-2xl p-4 border border-[#1e293b]/30`}>
@@ -2051,7 +2142,7 @@ function App() {
               <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-slate-700'}`}>DataExtract</span>
               <span className={`text-xs ${isDarkMode ? 'text-slate-400 bg-[#1e293b]' : 'text-slate-400 bg-slate-100'} px-2 py-0.5 rounded-full`}>v4.1</span>
             </div>
-            <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-400'}`}>© 2026 DataExtract — Multi-file Excel extraction with batch delete</p>
+            <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-400'}`}>© 2026 DataExtract — Smart duplicate detection & batch delete</p>
             <div className="flex items-center gap-6 text-xs text-slate-400">
               <a href="#" className={`hover:${isDarkMode ? 'text-blue-400' : 'text-blue-600'} transition-colors`}>Privacy</a>
               <a href="#" className={`hover:${isDarkMode ? 'text-blue-400' : 'text-blue-600'} transition-colors`}>Terms</a>
